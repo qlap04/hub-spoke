@@ -1247,21 +1247,21 @@ resource vnetSpokeTwo 'Microsoft.Network/virtualNetworks@2024-07-01' = {
           }
         }
       }
-      {
-        name: 'snet-privatelinkendpoints'
-        properties: {
-          addressPrefix: spokeTwoPrivateLinkSubnetPrefix
-          networkSecurityGroup: {
-            id: nsgPrivateLinkEndpointsSubnet.id
-          }
-          privateEndpointNetworkPolicies: 'Enabled'
-          privateLinkServiceNetworkPolicies: 'Enabled'
-          defaultOutboundAccess: false
-          routeTable: {
-            id: routeNextHopToFirewall.id
-          }
-        }
-      }
+      // {
+      //   name: 'snet-privatelinkendpoints'
+      //   properties: {
+      //     addressPrefix: spokeTwoPrivateLinkSubnetPrefix
+      //     networkSecurityGroup: {
+      //       id: nsgPrivateLinkEndpointsSubnet.id
+      //     }
+      //     privateEndpointNetworkPolicies: 'Enabled'
+      //     privateLinkServiceNetworkPolicies: 'Enabled'
+      //     defaultOutboundAccess: false
+      //     routeTable: {
+      //       id: routeNextHopToFirewall.id
+      //     }
+      //   }
+      // }
     ]
     enableDdosProtection: true
     ddosProtectionPlan: {
