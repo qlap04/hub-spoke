@@ -1,36 +1,61 @@
----
-page_type: sample
-languages:
-- azurecli
-- bicep
-products:
-  - azure
-  - azure-firewall
-  - azure-virtual-network
-  - azure-bastion
-  - azure-vpn-gateway
-name: Hub-spoke deployment
-urlFragment: hub-spoke-deployment
-description: This sample deploys Azure virtual networks in a hub and spoke configuration. An Azure Firewall and Bastion host are also deployed. Optionally, a VPN gateway and sample workload (virtual machines) can be deployed. 
-azureDeploy: https://raw.githubusercontent.com/Azure-Samples/azure-hub-spoke/main/hub-spoke/azuredeploy.json
----
+# Hub and spoke lab
 
-# Hub and spoke deployment
+A lab that deploys a hub-and-spoke network on Azure with Bicep: one hub, two spokes, an Azure Firewall in the hub, and a storage account reachable only through a private endpoint.
 
-This sample deploys Azure virtual networks in a hub and spoke configuration. An Azure Firewall and Bastion host are also deployed. Optionally, a VPN gateway and sample workload (virtual machines) can be deployed.
+## Origin
 
-Where applicable, each resource is configured to send diagnostics to an Azure Log Analytics instance.
+This project is copied and modified from [Azure-Samples/azure-hub-spoke](https://github.com/Azure-Samples/azure-hub-spoke) (the `hub-spoke` folder), released under the Microsoft MIT license (see [LICENSE](LICENSE)).
 
-![Hub and spoke architectural diagram.](https://learn.microsoft.com/azure/architecture/reference-architectures/hybrid-networking/images/hub-spoke.png)
+Changes from the original:
 
-For detailed information, see the Azure Hub and Spoke reference architecture in the Azure Architecture Center:
+- Removed Azure Bastion, the VPN gateway, the sample virtual machines and Log Analytics.
+- Added a storage account (public access disabled), a private endpoint, a private DNS zone for blob, and a firewall rule that allows HTTPS to the private endpoint.
+- Split `main.bicep` into three modules: hub, spoke one and spoke two.
+- Moved all IP ranges into `main.bicepparam`.
+- Added GitHub Actions to deploy the infrastructure and push content to blob storage.
 
-> [!div class="nextstepaction"]
-> [Hub-spoke network topology in Azure](https://learn.microsoft.com/azure/architecture/reference-architectures/hybrid-networking/hub-spoke)
+## Architecture
 
-## :rocket: Deploy sample
+| Component | Description |
+| :--- | :--- |
+| Hub | VNet with `AzureFirewallSubnet`, Azure Firewall (Basic) and its firewall policy, a DDoS protection plan, and a route table that sends `0.0.0.0/0` to the firewall. |
+| Spoke one | VNet with `snet-resources` and `snet-privatelinkendpoints`. Hosts the storage account (public access disabled), a blob private endpoint, the `worklogs` container, and the `privatelink.blob.*` private DNS zone. |
+| Spoke two | VNet with `snet-resources`, where the agent/runner lives. Linked to the private DNS zone so the storage name resolves to the private IP. |
+| Peering | The hub is peered both ways with each spoke. Traffic between the spokes goes through the firewall. |
 
-Create a resource group for the deployment.
+The firewall policy has two rules: allow DNS (UDP 53), and allow HTTPS (TCP 443) from the spoke two subnet to the spoke one private endpoint subnet.
+
+## Repository layout
+
+```
+bicep/
+  main.bicep          # parameters, shared NSGs, module calls
+  main.bicepparam     # values for every IP range
+  modules/
+    hub.bicep
+    spoke-one.bicep
+    spoke-two.bicep
+.github/workflows/
+  infra.yml           # what-if on PRs, deploy on push to main or manual run
+  push-to-blob.yml    # manual only, uploads content to blob storage
+```
+
+## Parameters
+
+Default values live in [bicep/main.bicepparam](bicep/main.bicepparam).
+
+| Parameter | Description | Value |
+| :--- | :--- | :--- |
+| `location` | Deployment region. Must support availability zones. | `resourceGroup().location` |
+| `hubAddressPrefix` | Address space of the hub VNet. | `10.0.0.0/22` |
+| `hubFirewallSubnetPrefix` | `AzureFirewallSubnet` (/26 or larger). | `10.0.3.0/26` |
+| `spokeOneAddressPrefix` | Address space of spoke one. | `10.100.0.0/22` |
+| `spokeOneResourcesSubnetPrefix` | `snet-resources` in spoke one. | `10.100.0.0/24` |
+| `spokeOnePrivateLinkSubnetPrefix` | `snet-privatelinkendpoints` in spoke one. | `10.100.1.0/26` |
+| `spokeTwoAddressPrefix` | Address space of spoke two. | `10.200.0.0/22` |
+| `spokeTwoResourcesSubnetPrefix` | `snet-resources` in spoke two (agent). | `10.200.0.0/24` |
+
+## Deploy
 
 ```bash
 LOCATION=eastus2
@@ -38,94 +63,25 @@ RESOURCEGROUP_NAME=rg-hub-spoke-${LOCATION}
 
 az group create --name ${RESOURCEGROUP_NAME} --location ${LOCATION}
 
-curl -o main.bicep https://raw.githubusercontent.com/Azure-Samples/azure-hub-spoke/main/hub-spoke/bicep/main.bicep
-```
-
-> The location for the deployed resources defaults to the location used for the target resource group. This deployment uses availability zones for all resources that support it, as hub networks are usually business critical. This means  if the resource group's location does not support availability zones, you must provide an additional parameter to your chosen command below of `location=value` with a value supports availability zones. See [Azure regions with availability zones](https://learn.microsoft.com/azure/availability-zones/az-overview#azure-regions-with-availability-zones).
-
-### Basic deployment
-
-Run the following command to initiate the deployment. If you would like to also deploy this sample with virtual machines and / or an Azure VPN gateway, see the `az deployment group create` examples found later in this document.
-
-```bash
 az deployment group create \
     --resource-group ${RESOURCEGROUP_NAME} \
-    --template-file main.bicep
+    --template-file bicep/main.bicep \
+    --parameters bicep/main.bicepparam
 ```
 
-### Deploy with virtual machines
+If the resource group's region does not support availability zones, add `location=<region with zones>` to `--parameters`.
 
-Run the following command to initiate the deployment with a Linux VM deployed to the first spoke network and a Windows VM deployed to the second spoke network.
+## GitHub Actions
 
-| :warning: | This deploys these VMs with basic configuration, they are not Internet facing, but security should always be top of mind.  Please update the `adminUsername` and `adminPassword` to a value of your choosing. |
-| --- | :--- |
+Configure these in the repository settings:
 
-```bash
-az deployment group create \
-    --resource-group ${RESOURCEGROUP_NAME} \
-    --template-file main.bicep \
-    --parameters deployVirtualMachines=true adminUsername=azureadmin
-```
+- Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (OIDC login).
+- Variables: `AZURE_RESOURCE_GROUP`, `AZURE_STORAGE_ACCOUNT`.
 
-### Deploy with VPN gateway
+`push-to-blob.yml` runs on a self-hosted runner labeled `spoke-two`, because the storage account is reachable only through the private endpoint.
 
-Run the following command to initiate the deployment with a virtual network gateway deployed into the hub virtual network. Note, VPN gateways take a significant time to deploy.
-
-```bash
-az deployment group create \
-    --resource-group ${RESOURCEGROUP_NAME} \
-    --template-file main.bicep \
-    --parameters deployVpnGateway=true
-```
-
-### Deploy with virtual machines and a VPN gateway
-
-Run the following command to initiate the deployment with a Linux VM deployed to the first spoke network and a Windows VM deployed to the second spoke network.
-
-| :warning: | This deploys these VMs with basic configuration, they are not Internet facing, but security should always be top of mind.  Please update the `adminUsername` and `adminPassword` to a value of your choosing. |
-| --- | :--- |
-
-```bash
-az deployment group create \
-    --resource-group ${RESOURCEGROUP_NAME} \
-    --template-file main.bicep \
-    --parameters deployVirtualMachines=true adminUsername=azureadmin deployVpnGateway=true
-```
-
-## Solution deployment parameters
-
-| Parameter | Type | Description | Default |
-| :-------- | :--- | :---------- | :------ |
-| `location` | string | Deployment location. Location must support availability zones. | `resourceGroup().location` | 
-| `deployVirtualMachines` | bool | If true, deploys one basic Linux virtual machine to spoke one and one basic Windows virtual machine to spoke two. | `false` |
-| `adminUserName` | string | If deploying virtual machines, the admin user name for both VMs. | `azureadmin` |
-| `adminPassword` | securestring | If deploying virtual machines, the admin password for both VMs. | `null` |
-| `deployVpnGateway` | bool | If true, a virtual network gateway is deployed into the hub network (+30 min deployment). | `false` |
-
-## Diagnostic configurations
-
-The following resources are configured to send diagnostic logs to the included Log Analytics workspace.
-
-- All virtual networks
-- All network security groups
-- Azure VPN Gateway
-- Azure Firewall
-- Azure Bastion
-
-Note, this deployment includes optional basic virtual machines. These are not configured with a Log Analytics workspace, however, can be with the Log Analytics virtual machine extension for [Windows](https://learn.microsoft.com/azure/virtual-machines/extensions/oms-windows) and [Linux](https://learn.microsoft.com/azure/virtual-machines/extensions/oms-linux).
-
-## :broom: Clean up
+## Clean up
 
 ```bash
 az group delete --name ${RESOURCEGROUP_NAME} --yes
 ```
-
-## Microsoft Open Source Code of Conduct
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-
-Resources:
-
-- [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/)
-- [Microsoft Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-- Contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with questions or concerns
